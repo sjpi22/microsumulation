@@ -10,6 +10,7 @@ options(scipen = 999) # View data without scientific notation
 
 ###### 1.1 Load packages
 library(data.table)
+library(dplyr)
 
 ###### 1.2 Load functions from R folder
 distr.sources <- list.files("R", 
@@ -63,9 +64,17 @@ m_patients[time_H_S < time_H_D, `:=` (time_start = time_H_S,
 
 #### 4. Epidemiological calculations ========================================================
 
-df_prev <- calc_prevalence(m_patients = m_patients, 
-                           start_var = "time_start", 
-                           end_var = "time_end", 
-                           censor_var = "time_H_D", 
-                           v_ages = v_ages)
+# Prevalence (cross-sectional)
+df_prev_cs <- calc_prevalence(m_patients = m_patients, 
+                              start_var = "time_start", 
+                              end_var = "time_end", 
+                              censor_var = "time_H_D", 
+                              v_ages = v_ages)
 
+# Prevalence (longitudinal)
+df_prev_long <- calc_prevalence(m_patients = m_patients, 
+                                start_var = "time_start", 
+                                end_var = "time_end", 
+                                censor_var = "time_H_D",
+                                v_ages = v_ages, 
+                                method = "long")

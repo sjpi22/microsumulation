@@ -1,8 +1,54 @@
-# Calculate age-specific prevalence
+#' Calculate Age-Specific Prevalence
+#'
+#' Estimates the prevalence of a condition at specific ages from a matrix or 
+#' data frame of patient-level time-to-event data. Individuals are considered 
+#' prevalent cases if they have experienced the event between \code{start_var} 
+#' and \code{end_var}, and are not censored by \code{censor_var}.
+#'
+#' @param m_patients A data frame or matrix where each row represents a patient, 
+#'   and columns include age at event onset, transition, and censoring.
+#' @param start_var The name (string) of the variable in \code{m_patients} 
+#'   indicating age at condition onset.
+#' @param end_var The name (string) of the variable indicating age at which 
+#'   condition ends (e.g., progression to cancer).
+#' @param censor_var The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
+#'   age are excluded from the denominator at that age.
+#' @param id_var The name (string) of the variable indicating the patient ID.
+#' @param v_ages A numeric vector of ages at which to estimate prevalence. If \code{NULL}, 
+#'   all unique ages from the data will be used.
+#' @param method Method for calculating prevalence. \code{"cs"} for cross-sectional 
+#'   and \code{"long"} for longitudinal.
+#' @param dt_sample_ages Optional data frame of sampled patient ages at evaluation, 
+#'   if using simulated individual-level trajectories.
+#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
+#'
+#' @return A data frame with estimated prevalence and confidence intervals at each age.
+#'
+#' @examples
+#' # Example usage with simulated data:
+#' m_patients <- data.frame(
+#'   pt_id = 1:5,
+#'   time_S = c(45, 50, 60, 55, 47), # Time to disease onset
+#'   time_R = c(52, 65, 70, 58, 55), # Time to recovery
+#'   time_D = c(50, 75, 68, 60, 90)  # Time to death
+#' )
+#' calc_prevalence(
+#'   m_patients = m_patients,
+#'   start_var = "time_S",
+#'   end_var = "time_R",
+#'   censor_var = "time_D",
+#'   v_ages = seq(50, 60, by = 5)
+#' )
+#' 
+#' @import data.table
+#' @importFrom dplyr %>%
+#' @export
 calc_prevalence <- function(m_patients, 
                             start_var, 
                             end_var, 
                             censor_var, 
+                            id_var = "pt_id",
                             v_ages = NULL,
                             method = "cs",
                             dt_sample_ages = NULL,
@@ -13,10 +59,13 @@ calc_prevalence <- function(m_patients,
     age_end = v_ages[-1]
   )
   
+  # Ensure that key is set for cohort data
+  if (is.null(key(m_patients))) setkeyv(m_patients, id_var)
+  
   if (method == "cs") {
     # Sample age of study
     if (is.null(dt_sample_ages)) {
-      dt_sample_ages <- data.table(pt_id = m_patients$pt_id)
+      dt_sample_ages <- data.table(pt_id = m_patients[[id_var]])
       dt_sample_ages[, sample_age := runif(.N, min(v_ages), max(v_ages))]
     }
     
@@ -26,6 +75,9 @@ calc_prevalence <- function(m_patients,
     
     # Set patient ID as key of sample age data table
     setkey(dt_sample_ages, pt_id)
+    
+    # Rename ID if necessary
+    if (id_var != "pt_id") setnames(dt_sample_ages, "pt_id", id_var)
     
     # Merge sample age to patient data table
     m_patients[dt_sample_ages, `:=` (sample_age = i.sample_age,
@@ -74,19 +126,23 @@ calc_nlesions <- function(m_lesions,
                           start_var, 
                           end_var, 
                           censor_var,
+                          id_var,
                           start_age, 
                           end_age, 
                           n_max = 3,
                           method = "cs",
                           dt_sample_ages = NULL, 
                           conf_level = 0.95) {
+  # Ensure that key is set for cohort data
+  if (is.null(key(m_lesions))) setkeyv(m_lesions, id_var)
+  
   if (method == "cs") {
     # Account for case of null data
     if (!is.null(m_lesions)) {
       # Sample age of study
       if (is.null(dt_sample_ages)) {
         dt_sample_ages <- data.table(
-          pt_id = unique(m_lesions$pt_id)
+          pt_id = unique(m_lesions[[id_var]])
         )
         dt_sample_ages[, sample_age := query_distr("r", nrow(dt_sample_ages), sample_distr$distr, sample_distr$params)]
       }
@@ -94,13 +150,16 @@ calc_nlesions <- function(m_lesions,
       # Set patient ID as key of sample age data table
       setkey(dt_sample_ages, pt_id)
       
+      # Rename ID if necessary
+      if (id_var != "pt_id") setnames(dt_sample_ages, "pt_id", id_var)
+      
       # Merge sample age to lesion data table
       m_lesions[dt_sample_ages, `:=` (sample_age = i.sample_age)]
       
       # Filter to lesions existing at age and uncensored, and get distribution of lesion frequency
       lesion_cts <- m_lesions[
         get(start_var) <= sample_age & get(end_var) > sample_age & get(censor_var) > sample_age, 
-        .(lesion_count = .N), by = pt_id
+        .(lesion_count = .N), by = get(id_var)
       ][, .(n_cases = .N), by = lesion_count]
       
       # Collapse together any number of lesions larger than n_max (e.g., if n_max is 3, 3+ is grouped together)
@@ -143,20 +202,20 @@ calc_nlesions <- function(m_lesions,
     if (!is.null(m_lesions)) {
       # Convert data to lesion start and end events
       dt_events <- rbindlist(list(
-        m_lesions[get(start_var) < pmin(get(censor_var), end_age), .(pt_id, event_time = pmax(get(start_var), start_age), delta = 1)],  # Start of lesion or eligible screening period
-        m_lesions[get(start_var) < pmin(get(censor_var), end_age), .(pt_id, event_time = pmin(get(end_var), get(censor_var), end_age), delta = -1)] # End of lesion or eligible screening period
+        m_lesions[get(start_var) < pmin(get(censor_var), end_age), .(get(id_var), event_time = pmax(get(start_var), start_age), delta = 1)],  # Start of lesion or eligible screening period
+        m_lesions[get(start_var) < pmin(get(censor_var), end_age), .(get(id_var), event_time = pmin(get(end_var), get(censor_var), end_age), delta = -1)] # End of lesion or eligible screening period
       ))
       
       # Sort by patient and event time
-      setorder(dt_events, pt_id, event_time)
+      setorderv(dt_events, c(id_var, "event_time"))
       
       # Compute cumulative lesion count and time intervals
       dt_events[, `:=` (lesion_count = cumsum(delta),
                         next_time = shift(event_time, type = "lead")),
-                by = pt_id]
+                by = get(id_var)]
       
       # Filter to time intervals with > 0 lesions
-      dt_intervals <- dt_events[!is.na(next_time) & lesion_count > 0, .(pt_id, start_time = event_time, end_time = next_time, lesion_count)]
+      dt_intervals <- dt_events[!is.na(next_time) & lesion_count > 0, .(get(id_var), start_time = event_time, end_time = next_time, lesion_count)]
       
       # Get duration of time intervals
       dt_intervals[, duration := end_time - start_time]
