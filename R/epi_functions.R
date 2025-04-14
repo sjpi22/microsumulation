@@ -19,8 +19,14 @@
 #'   all unique ages from the data will be used.
 #' @param method Method for calculating prevalence. \code{"cs"} for cross-sectional 
 #'   and \code{"long"} for longitudinal.
-#' @param dt_sample_ages Optional data frame of sampled patient ages at evaluation, 
-#'   if using simulated individual-level trajectories.
+#' @param sample_var Optional string with the variable indicating age at which 
+#'   patients are sampled for cross-sectional calculation. If \code{sample_var}
+#'   and \code{dt_sample_ages} are both populated, \code{sample_var} is used.
+#' @param dt_sample_ages Optional data frame of sampled patient ages for
+#'   cross-sectional calculation. If \code{sample_var} and \code{dt_sample_ages}
+#'   are both populated, \code{sample_var} is used.
+#' @param output_uncertainty Binary indicator for whether to output standard
+#'   errors and confidence intervals.
 #' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
 #'
 #' @return A data frame with estimated prevalence and confidence intervals at each age.
@@ -51,7 +57,9 @@ calc_prevalence <- function(m_patients,
                             id_var = "pt_id",
                             v_ages = NULL,
                             method = "cs",
+                            sample_var = NULL,
                             dt_sample_ages = NULL,
+                            output_uncertainty = FALSE,
                             conf_level = 0.95) {
   # Create age range data frame
   dt_ages <- data.table(
@@ -62,26 +70,33 @@ calc_prevalence <- function(m_patients,
   # Ensure that key is set for cohort data
   if (is.null(key(m_patients))) setkeyv(m_patients, id_var)
   
+  # Cross-sectional vs. longitudinal formulation
   if (method == "cs") {
-    # Sample age of study
-    if (is.null(dt_sample_ages)) {
-      dt_sample_ages <- data.table(pt_id = m_patients[[id_var]])
-      dt_sample_ages[, sample_age := runif(.N, min(v_ages), max(v_ages))]
+    # Assign sample ages if not given
+    if (is.null(sample_var)) {
+      # Sample age of study
+      if (is.null(dt_sample_ages)) {
+        dt_sample_ages <- data.table(pt_id = m_patients[[id_var]])
+        dt_sample_ages[, sample_age := runif(.N, min(v_ages), max(v_ages))]
+      }
+      
+      # Get age range of sample age
+      dt_sample_ages[, age_idx := findInterval(sample_age, v_ages)]
+      dt_sample_ages[, age_start := v_ages[age_idx], by = age_idx]
+      
+      # Set patient ID as key of sample age data table
+      setkey(dt_sample_ages, pt_id)
+      
+      # Rename ID if necessary
+      if (id_var != "pt_id") setnames(dt_sample_ages, "pt_id", id_var)
+      
+      # Merge sample age to patient data table
+      m_patients[dt_sample_ages, `:=` (sample_age = i.sample_age,
+                                       age_start = i.age_start)]
+    } else {
+      # Rename given sample variable
+      if (sample_var != "sample_age") setnames(m_patients, sample_var, "sample_age")
     }
-    
-    # Get age range of sample age
-    dt_sample_ages[, age_idx := findInterval(sample_age, v_ages)]
-    dt_sample_ages[, age_start := v_ages[age_idx], by = age_idx]
-    
-    # Set patient ID as key of sample age data table
-    setkey(dt_sample_ages, pt_id)
-    
-    # Rename ID if necessary
-    if (id_var != "pt_id") setnames(dt_sample_ages, "pt_id", id_var)
-    
-    # Merge sample age to patient data table
-    m_patients[dt_sample_ages, `:=` (sample_age = i.sample_age,
-                                     age_start = i.age_start)]
     
     # Calculate cross-sectional prevalence by age group among people not censored by sample age
     m_patients[get(censor_var) > sample_age, fl_case := (get(start_var) <= sample_age & get(end_var) > sample_age)]
@@ -92,16 +107,30 @@ calc_prevalence <- function(m_patients,
       value = mean(fl_case)), by = age_start]
     summ_prevalence <- merge(dt_ages, summ_prevalence, by = "age_start", all.x = T)
     
-    # Calculate confidence intervals and merge to summary table
-    df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, summ_prevalence$n_cases, summ_prevalence$n_total)))
-    summ_prevalence[, c("ci_lb", "ci_ub") := df_confint]
+    # If required to output uncertainty estimates
+    if (output_uncertainty) {
+      # Calculate confidence intervals and merge to summary table
+      df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, 
+                                        summ_prevalence$n_cases, 
+                                        summ_prevalence$n_total)))
+      summ_prevalence[, c("ci_lb", "ci_ub") := df_confint]
+      
+      # Estimate SE from CI
+      summ_prevalence[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+    }
     
-    # Estimate SE from CI
-    summ_prevalence[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+    if (!is.null(sample_var)) {
+      # Reset variable name
+      if (sample_var != "sample_age") setnames(m_patients, "sample_age", sample_var)
+        
+      # Remove added variables from m_patients
+      m_patients[, c("age_start", "fl_case") := NULL]
+    } else {
+      # Remove added variables from m_patients
+      m_patients[, c("sample_age", "age_start", "fl_case") := NULL]
+    }
     
-    # Remove added variables from m_patients
-    m_patients[, c("sample_age", "age_start", "fl_case") := NULL]
-  } else {
+  } else if (method == "long") {
     # Calculate prevalence in the given age ranges
     summ_prevalence <- cbind(dt_ages, t(mapply(
       function(age_start, age_end) {
@@ -115,6 +144,18 @@ calc_prevalence <- function(m_patients,
       }, dt_ages$age_start, dt_ages$age_end))) %>%
       mutate_all(~replace(., is.na(.), 0)) %>%
       setDT()
+    
+    # If required to output uncertainty estimates
+    if (output_uncertainty) {
+      # Generate confidence interval
+      df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, 
+                                        summ_prevalence$person_years_cases / (summ_prevalence$age_end - summ_prevalence$age_start) * 2, 
+                                        summ_prevalence$person_years_total / (summ_prevalence$age_end - summ_prevalence$age_start) * 2)))
+      summ_prevalence[, c("ci_lb", "ci_ub") := df_confint]
+      
+      # Estimate SE from CI
+      summ_prevalence[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+    }
   }
   
   return(summ_prevalence)

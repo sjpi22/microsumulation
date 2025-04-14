@@ -28,12 +28,12 @@ seed <- 123  # Random seed
 ###### 2.2 Time-to-event parameters
 params_H_Do <- c(min = 10, max = 50)  # Time from birth to death from other causes
 params_H_S  <- c(rate = 0.1)          # Time from birth to disease onset
-params_S_R  <- c(rate = 0.3)            # Time from disease onset to recovery
-params_S_Dx <- c(rate = 0.1)            # Time from disease onset to death from disease
+params_S_R  <- c(rate = 0.3)          # Time from disease onset to recovery
+params_S_Dx <- c(rate = 0.1)          # Time from disease onset to death from disease
 
 ###### 2.3 Epidemiology calculation parameters
 v_ages <- seq(0, 50, 10) # Age ranges for prevalence
-  
+
   
 #### 3. Simulate data ========================================================
 
