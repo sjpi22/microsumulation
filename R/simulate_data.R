@@ -14,10 +14,10 @@ cancer_des <- function(n, l_params) {
   
   # Simulate time to death from other causes, preclinical cancer, clinical cancer, and death from cancer
   with(l_params, {
-    m_patients[, `:=` (time_Do = runif(.N, min = params_Do["min"], max = params_Do["max"]),
-                       time_P  = runif(.N, min = params_P["min"],  max = params_P["max"]),
-                       time_PC = runif(.N, min = params_PC["min"], max = params_PC["max"]),
-                       time_CD = runif(.N, min = params_CD["min"], max = params_CD["max"]))]
+    m_patients[, `:=` (time_Do = rexp(.N, r_Do),
+                       time_P  = rexp(.N, r_P),
+                       time_PC = rexp(.N, r_PC),
+                       time_CD = rexp(.N, r_CD))]
     
     # Calculate time from birth to clinical cancer and death from cancer
     m_patients[, `:=` (time_C  = time_P + time_PC,
@@ -43,15 +43,15 @@ cancer_cohort_ode <- function(t, v_x, params) {
   with(                                               # We can simplify code using "with"
     as.list(params),                                  # This argument to "with" lets us use the variable names
     {                                                  
-      #Define differential equations
-      dH  <- -(r_H_P + r_Do)*H
-      dP  <- r_H_P*H - (r_P_C + r_Do)*P
-      dC  <- r_P_C*P - (r_C_Dc + r_Do)*C
+      # Define differential equations
+      dH  <- -(r_P + r_Do)*H
+      dP  <- r_P*H - (r_PC + r_Do)*P
+      dC  <- r_PC*P - (r_CD + r_Do)*C
       dDo <- r_Do*(H + P + C)
-      dDc <- r_C_Dc*C 
-      dCInc <- r_P_C*P #Incidence of clinical cancer
-      dx  <- c(dH, dP, dC, dDo, dDc, dCInc) #Combine results into a single vector dx
-      list(dx)                    #Return result as a list
-    }                             #NOTICE that here, we've assumed beta is constant
+      dDc <- r_CD*C 
+      dCInc <- r_PC*P # Incidence of clinical cancer
+      dx  <- c(dH, dP, dC, dDo, dDc, dCInc) # Combine results into a single vector dx
+      list(dx)                    # Return result as a list
+    }                            
   )
 }

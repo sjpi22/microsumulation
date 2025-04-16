@@ -13,6 +13,7 @@ library(testthat)
 library(tidyverse)
 library(readxl)
 library(data.table)
+require(deSolve)
 library(foreach)
 library(doParallel)
 
@@ -35,14 +36,10 @@ conf_level <- 0.95    # Confidence level
 n_sim      <- 500     # Number of simulations
 
 ###### 2.2 Time-to-event parameters
-params_Do <- c(min = 30, max = 100)  # Time from birth to death from other causes
-params_P  <- c(min = 0, max = 500)  # Time from birth to preclinical cancer onset
-params_PC <- c(min = 0, max = 10)  # Time from preclinical to clinical cancer
-params_CD <- c(min = 0, max = 10)  # Time from clinical cancer to death
-l_params <- list(params_Do = params_Do,
-                 params_P = params_P,
-                 params_PC = params_PC,
-                 params_CD = params_CD)
+l_params <- list(r_P  = 1/200, # Rate from birth to preclinical cancer onset
+                 r_PC = 1/10, # Rate from preclinical to clinical cancer
+                 r_Do = 1/80, # Rate from birth to death from other causes
+                 r_CD = 1/10) # Rate from clinical cancer to death
 
 ###### 2.3 Epidemiology calculation parameters
 var_onset <- "time_P"
@@ -120,6 +117,43 @@ set.seed(seed, kind = "L'Ecuyer-CMRG")
 # If running locally, use all available cores except for reserved ones
 registerDoParallel(cores = detectCores(logical = TRUE) - 2)
 
+# Vector with initial states
+v_state_init <- c(H  = 1, 
+                  P  = 0, 
+                  C  = 0,
+                  DO = 0, 
+                  DC = 0,
+                  CInc = 0)
+
+# Solves the system of ODEs an returns the proportion or number of the 
+# population in each of the states or compartments at the user-specified times
+# in a data.frame in wide format
+df_cancer_cohort_wide <- as.data.table(lsoda(y     = v_state_init, 
+                                             times = 0:max_age, 
+                                             func  = cancer_cohort_ode, 
+                                             parms = l_params))
+
+# Lag age and calculate incidence with diff
+df_cancer_cohort_wide[, `:=` (time = time + 1,
+                              p_alive = H + P + C,
+                              p_cf = H + P,
+                              dCInc = c(diff(CInc), NA))]
+
+# Map age range groups and calculate total alive per age
+df_cancer_cohort_wide[, `:=` (age_idx = findInterval(time, v_ages),
+                              p_alive_avg = (p_alive + lead(p_alive))/2,
+                              p_cf_avg = (p_cf + lead(p_cf))/2)]
+df_cancer_cohort_wide[, `:=` (age_start = v_ages[age_idx]), by = age_idx]
+
+# Calculate true incidence in age ranges
+true_incidence <- df_cancer_cohort_wide[age_start < max(v_ages), 
+                                        .(true = sum(dCInc)/sum(p_alive_avg)*rate_unit,
+                                          true_cf = sum(dCInc)/sum(p_cf_avg)*rate_unit), 
+                                        by = age_start]
+v_true <- true_incidence$true
+v_true_cf <- true_incidence$true_cf
+
+# Run simulations
 stime <- system.time({
   full_summ_incidence <- foreach(
     i=1:n_sim, 
@@ -129,7 +163,7 @@ stime <- system.time({
       # Simulate cohort
       m_patients <- cancer_des(n_cohort, l_params)
       
-      # Calculate incidence (longitudinal)
+      # Calculate incidence (longitudinal, full)
       summ_incidence_long <- calc_incidence(
         m_patients, 
         time_var = "time_C", 
@@ -139,24 +173,42 @@ stime <- system.time({
         output_uncertainty = T,
         rate_unit = rate_unit)
       
+      # Calculate incidence (longitudinal, cancer-free)
+      summ_incidence_long_cf <- calc_incidence(
+        m_patients, 
+        time_var = "time_C", 
+        censor_var = "time_C", 
+        method = "long",
+        v_ages = v_ages,
+        output_uncertainty = T,
+        rate_unit = rate_unit)
+      
+      # Merge data
+      summ_incidence_long <- merge(summ_incidence_long,
+                                   summ_incidence_long_cf,
+                                   by = c("age_range", "age_start", "age_end"),
+                                   suffixes = c("", "_cf"))
+      
       summ_incidence_long
     }
 })
 print(stime)
 
 # Calculate mean for each age group
-mean_incidence <- full_summ_incidence[, .(mean_long = mean(value)), by = age_start]
+mean_incidence <- full_summ_incidence[, .(mean_long = mean(value),
+                                          mean_long_cf = mean(value_cf)), by = age_start]
 
-# Merge all and mean incidence
-full_summ_incidence <- merge(full_summ_incidence,
-                              mean_incidence,
-                              by = c("age_start"))
+# Bias
+mean_incidence[, `:=` (bias_long = (mean_long-v_true)/v_true,
+                       bias_long_cf = (mean_long_cf-v_true_cf)/v_true_cf)]
 
 # Check whether CIs contains longitudinal and true incidence
-full_summ_incidence[, `:=` (contained_true_long = mean_long >= ci_lb & mean_long <= ci_ub)]
+full_summ_incidence[, `:=` (contained_true_long = v_true >= ci_lb & v_true <= ci_ub,
+                            contained_true_long_cf = v_true_cf >= ci_lb_cf & v_true_cf <= ci_ub_cf)]
 
 # Percentage of values within CIs
-pct_contained <- full_summ_incidence[, .(pct_long = mean(contained_true_long)), by = age_start]
+pct_contained <- full_summ_incidence[, .(pct_long = mean(contained_true_long),
+                                         pct_long_cf = mean(contained_true_long_cf)), by = age_start]
 
 # Calculate SD for each age group
 sd_incidence <- full_summ_incidence[, .(mcse_long = sd(value),
@@ -168,5 +220,5 @@ sd_incidence[, `:=` (ratio_long = mcse_long / mean_se_long)]
 # Perform consistency unit tests
 test_that("Methods of calculating incidence produce similar results", {
   expect_equal(abs(pct_contained$pct_long - conf_level) < 0.03, rep(T, length(v_ages)-1))
+  expect_equal(abs(pct_contained$pct_long_cf - conf_level) < 0.03, rep(T, length(v_ages)-1))
 })
-
