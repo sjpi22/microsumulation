@@ -716,9 +716,6 @@ calc_distr <- function(m_patients,
 #'   age are excluded from the sum. If NULL, \code{sum_var} will be used.
 #' @param min_age Minimum age at which to begin evaluating distribution. 
 #'   Default 0.
-#' @param output_uncertainty Binary indicator for whether to output standard
-#'   errors and confidence intervals.
-#' @param unit Quantity to divide total by for reporting.
 #'
 #' @return A data frame with estimated prevalence and confidence intervals at each age.
 #'
@@ -756,13 +753,7 @@ calc_lifeyears <- function(
                           N = .N)]
   }
   
-  # Scale to unit if necessary
-  if (unit == 1) {
-    return(unlist(res))
-  } else {
-    res[, time_total := time_total / N * unit]
-    return(unlist(res))
-  }
+  return(unlist(res))
 }
 
 
@@ -782,7 +773,6 @@ calc_lifeyears <- function(
 #' @param event_var The name (string) of the variable indicating the event that 
 #'   must occur before the censor time for an individual to be included. If 
 #'   \code{NULL}, \code{start_var} will be used.
-#' @param id_var The name (string) of the variable indicating the patient ID.
 #'
 #' @return A data table with the mean duration.
 #'
@@ -809,11 +799,59 @@ calc_dwell_time <- function(
     start_var,
     end_var,
     censor_var,
-    event_var = NULL,
-    id_var = "pt_id"
+    event_var = NULL
 ) {
   # Get mean sojourn time among people diagnosed with cancer in lifetime
   if (is.null(event_var)) event_var <- start_var
   res <- m_patients[get(event_var) < get(censor_var), mean(get(end_var) - get(start_var))]
   return(res)
+}
+
+#' Calculate Risk
+#' 
+#' Calculate age-conditional or lifetime risk of a condition
+#' 
+#' @param m_patients A data frame or matrix where each row represents a patient, 
+#'   and columns include age at event onset, transition, and censoring.
+#' @param start_var The name (string) of the variable in \code{m_patients} 
+#'   indicating the start age of the condition.
+#' @param censor_var The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
+#'   age are excluded from the sum. If NULL, \code{sum_var} will be used.
+#' @param min_age Minimum age at which to begin evaluating risk. Default 0.
+#' @param max_age Maximum age at which to evaluate risk.
+#' @param output_uncertainty Binary indicator for whether to output standard
+#'   errors and confidence intervals.
+#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
+#'
+calc_risk <- function(
+    m_patients, 
+    start_var,
+    censor_var,
+    min_age = 0,
+    max_age = NULL,
+    output_uncertainty = FALSE,
+    conf_level = 0.95
+) {
+  # Set minimum age as 0 and maximum age as maximum observed age in data if not provided
+  if (is.null(min_age)) min_age <- 0
+  if (is.null(max_age)) max_age <- m_patients[, max(get(censor_var))]
+  
+  # Among individuals who are uncensored without condition by min_age,
+  # calculate number that develop condition before earliest of death and max_age
+  res <- m_patients[pmin(get(start_var), get(censor_var), na.rm = T) >= min_age, 
+                    .(n_cases = sum(get(start_var) < pmin(max_age, get(censor_var))),
+                      n_total = .N)]
+  
+  # Calculate risk
+  res[, value := n_cases/n_total]
+  
+  # Calculate confidence intervals and merge to summary table if needed
+  if (output_uncertainty) {
+    df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, res$n_cases, res$n_total)))
+    res[, c("ci_lb", "ci_ub") := df_confint]
+    
+    # Estimate SE from CI
+    res[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+  }
 }
