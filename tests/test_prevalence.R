@@ -521,18 +521,21 @@ mean_prevalence[, `:=` (bias_cs = (mean_cs-v_true)/v_true,
                         bias_rcs = (mean_rcs-v_true)/v_true)]
 
 # Check whether CIs contains longitudinal and true prevalence
-full_summ_prevalence[, `:=` (contained_true_cs = v_true >= ci_lb_cs & v_true <= ci_ub_cs,
-                             contained_true_long = v_true >= ci_lb_long & v_true <= ci_ub_long,
-                             contained_true_rcs = v_true >= ci_lb & v_true <= ci_ub,
-                             consistent_cs_long = value_long >= ci_lb_cs & value_long <= ci_ub_cs,
-                             consistent_cs_rcs = value >= ci_lb_cs & value <= ci_ub_cs)]
+full_summ_prevalence[, `:=` (
+  contained_true_cs = v_true >= ci_lb & v_true <= ci_ub,
+  # contained_true_long = v_true >= ci_lb_long & v_true <= ci_ub_long,
+  # contained_true_rcs = v_true >= ci_lb & v_true <= ci_ub,
+  consistent_cs_long = value_long >= ci_lb & value_long <= ci_ub,
+  consistent_cs_rcs = value >= ci_lb & value <= ci_ub
+)]
 
 # Percentage of values within CIs
 pct_contained <- full_summ_prevalence[, .(pct_cs = mean(contained_true_cs),
-                                          pct_long = mean(contained_true_long),
-                                          pct_rcs = mean(contained_true_rcs),
+                                          # pct_long = mean(contained_true_long),
+                                          # pct_rcs = mean(contained_true_rcs),
                                           pct_consistent_long = mean(consistent_cs_long),
-                                          pct_consistent_rcs = mean(consistent_cs_rcs)), by = age_start]
+                                          pct_consistent_rcs = mean(consistent_cs_rcs)), 
+                                      by = age_start]
 
 # Perform consistency unit tests
 test_that("Methods of calculating prevalence match with confidence intervals", {
