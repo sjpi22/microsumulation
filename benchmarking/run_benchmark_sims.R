@@ -35,6 +35,8 @@ conf_level <- 0.95    # Confidence level
 n_sim      <- 100     # Number of simulations
 
 ###### 2.2 Time-to-event parameters
+# Individuals die independently of preclinical cancer, so effectively
+# prevalence = CDF of preclinical Weibull distribution
 l_params <- list(P  = list(distr = "weibull",
                            params = list(shape = 2,
                                          scale = 200)), # Rate from birth to preclinical cancer onset
@@ -53,6 +55,17 @@ var_onset <- "time_P"
 v_ages    <- seq(30, 80, 10) # Age ranges for prevalence
 
 
+#### 3. Pre-processing  ===========================================
+
+# Set seed for reproducibility
+set.seed(seed)
+
+
+#### 4. Unit tests  ===========================================
+
+# Solve for true prevalence in each age range
+true_prevalence <- mapply(integrate(f, ), v_ages[-1]
+
 ###### 4.5 Variation of prevalence
 # Set seed for parallelization
 set.seed(seed, kind = "L'Ecuyer-CMRG")
@@ -60,11 +73,16 @@ set.seed(seed, kind = "L'Ecuyer-CMRG")
 # If running locally, use all available cores except for reserved ones
 registerDoParallel(cores = detectCores(logical = TRUE) - 2)
 
-# Solve for true prevalence in each age range
-true_prevalence <- df_cancer_cohort_wide[age_start < max(v_ages), 
-                                         .(p_cases = sum(P),
-                                           p_total = sum(H, P, C)),
-                                         by = age_start]
+
+# Calculate prevalence (cross-sectional)
+summ_prevalence <- calc_prevalence(
+  m_patients, 
+  start_var = "time_P", 
+  end_var = "time_C", 
+  censor_var = "time_D", 
+  method = "cs",
+  v_ages = v_ages,
+  output_uncertainty = T)
 
 # Run simulations
 stime <- system.time({
@@ -76,15 +94,28 @@ stime <- system.time({
       # Simulate cohort
       m_patients <- cancer_des(n_cohort, l_params)
       
-      # Calculate prevalence (cross-sectional)
-      summ_prevalence <- calc_prevalence(
+      # Calculate prevalence (longitudinal)
+      summ_prevalence_long <- calc_prevalence(
         m_patients, 
         start_var = "time_P", 
         end_var = "time_C", 
         censor_var = "time_D", 
-        method = "cs",
+        method = "longslow",
         v_ages = v_ages,
         output_uncertainty = T)
+    }
+})
+print(stime)
+
+# Run simulations
+stime2 <- system.time({
+  full_summ_prevalence <- foreach(
+    i=1:n_sim, 
+    .combine=rbind, 
+    .inorder=FALSE, 
+    .packages=c("data.table","tidyverse")) %dopar% {
+      # Simulate cohort
+      m_patients <- cancer_des(n_cohort, l_params)
       
       # Calculate prevalence (longitudinal)
       summ_prevalence_long <- calc_prevalence(
@@ -95,32 +126,9 @@ stime <- system.time({
         method = "long",
         v_ages = v_ages,
         output_uncertainty = T)
-      
-      # Calculate prevalence (repeated cross-sectional)
-      summ_prevalence_rcs <- calc_prevalence(
-        m_patients, 
-        start_var = "time_P", 
-        end_var = "time_C", 
-        censor_var = "time_D", 
-        method = "rcs",
-        v_ages = v_ages,
-        output_uncertainty = T)
-      
-      # Merge longitudinal and cross-sectional
-      summ_prevalence <- merge(summ_prevalence,
-                               summ_prevalence_long, 
-                               by = c("age_start", "age_end"),
-                               suffixes = c("_cs", "_long"))
-      
-      # Merge with repeated cross-sectional
-      summ_prevalence <- merge(summ_prevalence,
-                               summ_prevalence_rcs, 
-                               by = c("age_start", "age_end"),
-                               suffixes = c("", "_rcs"))
-      summ_prevalence
     }
 })
-print(stime)
+print(stime2)
 
 # Calculate mean for each age group
 mean_prevalence <- full_summ_prevalence[, .(mean_cs = mean(value_cs),

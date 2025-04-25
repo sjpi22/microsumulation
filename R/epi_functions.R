@@ -167,7 +167,7 @@ calc_prevalence <- function(m_patients,
       m_patients[, (varname) := l_overwrite[[varname]]]
     }
     
-  } else if (method == "long") {
+  } else if (method == "longslow") {
     # Calculate prevalence in the given age ranges
     summ_prevalence <- cbind(dt_ages, t(mapply(
       function(age_start, age_end) {
@@ -181,6 +181,63 @@ calc_prevalence <- function(m_patients,
       }, dt_ages$age_start, dt_ages$age_end))) %>%
       mutate_all(~replace(., is.na(.), 0)) %>%
       setDT()
+    
+    # Faster version?
+  } else if (method == "long") {
+    # Calculate total condition time in the given age ranges
+    num <- mapply(
+      function(age_start, age_end) {
+        person_years_cases <- unname(unlist(m_patients[, sum(pmax(pmin(get(end_var), get(censor_var), age_end, na.rm = TRUE) - pmax(pmin(get(start_var), Inf, na.rm = T), age_start, na.rm = TRUE), 0))]))
+      }, dt_ages$age_start, dt_ages$age_end)
+    
+    # Augment dt_ages
+    dt_ages <- rbind(dt_ages, 
+                     list(tail(v_ages, 1), Inf))
+    
+    # Calculate total uncensored years and number of individuals in each age range
+    denom <- m_patients[, .(
+      n = .N,
+      time_range = sum(get(censor_var))), 
+      by = cut(get(censor_var), c(v_ages, Inf), right = F, labels = F)]
+    
+    # Merge start and end dates of ranges
+    denom[, `:=` (age_start = v_ages[cut]), 
+          by = cut]
+    
+    # Merge denominator
+    summ_prevalence <- merge(dt_ages, denom[, -c("cut")], by = c("age_start"), all.x = T)
+    
+    # Sort ranges in descending order
+    setorder(summ_prevalence, -age_start)
+    
+    # Reset NA to 0
+    setnafill(summ_prevalence, cols = c("n", "time_range"), fill = 0)
+    
+    # Calculate length of age range and number of individuals in and older than age range
+    summ_prevalence[, `:=` (diff_age = age_end - age_start,
+                            n_older = cumsum(n))]
+    
+    # Calculate total exposure time before and after age ranges above
+    summ_prevalence[, `:=` (time_before = age_start * n,
+                            time_older = diff_age * lag(n_older))]
+    
+    # Calculate total exposure time within age ranges
+    summ_prevalence[, `:=` (person_years_total = time_range - time_before + time_older)]
+    
+    # Reorder by age range
+    setorder(summ_prevalence, age_start)
+    
+    # Remove last row
+    summ_prevalence <- summ_prevalence[-nrow(summ_prevalence)]
+    
+    # Join numerator
+    summ_prevalence[, person_years_cases := num]
+    
+    # Calculate prevalence
+    summ_prevalence[, value := person_years_cases / person_years_total]
+    
+    # Reset NA to 0
+    setnafill(summ_prevalence, cols = c("person_years_cases", "person_years_total", "value"), fill = 0)
   } else if (method == "rcs") {
     # Create sequence of age ranges including (-Inf, 0] with 1-year intervals from min to max of v_ages
     v_ages_tabulate <- unique(c(-Inf, seq(min(v_ages), max(v_ages))))
