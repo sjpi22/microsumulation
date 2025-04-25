@@ -14,8 +14,7 @@ cancer_des <- function(n, l_params) {
   
   # Simulate time to death from other causes, preclinical cancer, clinical cancer, and death from cancer
   for (event in names(l_params)) {
-    m_patients[, paste0("time_", event) := do.call(paste0("r", l_params[[event]][["distr"]]),
-                                                   args = c(list(.N), l_params[[event]][["params"]]))]
+    m_patients[, paste0("time_", event) := query_distr("r", .N, l_params[[event]][["distr"]], l_params[[event]][["params"]])]
   }
   
   # Calculate time from birth to clinical cancer and death from cancer

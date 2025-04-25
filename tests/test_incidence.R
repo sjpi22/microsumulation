@@ -17,7 +17,7 @@ require(deSolve)
 library(foreach)
 library(doParallel)
 
-###### 1.1 Load functions
+###### 1.2 Load functions
 
 # Load functions
 distr.sources <- list.files("R", 
@@ -38,8 +38,8 @@ n_sim      <- 500     # Number of simulations
 ###### 2.2 Time-to-event parameters
 l_params_ode <- list(r_P  = 1/200, # Rate from birth to preclinical cancer onset
                      r_PC = 1/10, # Rate from preclinical to clinical cancer
-                     r_Do = 1/80, # Rate from birth to death from other causes
-                     r_CD = 1/10) # Rate from clinical cancer to death
+                     r_CD = 1/10, # Rate from clinical cancer to death
+                     r_Do = 1/80) # Rate from birth to death from other causes
 
 ###### 2.3 Epidemiology calculation parameters
 var_onset <- "time_P"
