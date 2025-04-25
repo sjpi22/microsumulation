@@ -36,10 +36,10 @@ conf_level <- 0.95    # Confidence level
 n_sim      <- 1000     # Number of simulations
 
 ###### 2.2 Time-to-event parameters
-l_params <- list(r_P  = 1/200, # Rate from birth to preclinical cancer onset
-                 r_PC = 1/10, # Rate from preclinical to clinical cancer
-                 r_Do = 1/80, # Rate from birth to death from other causes
-                 r_CD = 1/10) # Rate from clinical cancer to death
+l_params_ode <- list(r_P  = 1/200, # Rate from birth to preclinical cancer onset
+                     r_PC = 1/10, # Rate from preclinical to clinical cancer
+                     r_Do = 1/80, # Rate from birth to death from other causes
+                     r_CD = 1/10) # Rate from clinical cancer to death
 
 ###### 2.3 Epidemiology calculation parameters
 var_onset <- "time_P"
@@ -409,12 +409,6 @@ test_that("Test longitudinal prevalence across whole population", {
 
 
 ###### 4.5 Variation of prevalence
-# Set seed for parallelization
-set.seed(seed, kind = "L'Ecuyer-CMRG")
-
-# If running locally, use all available cores except for reserved ones
-registerDoParallel(cores = detectCores(logical = TRUE) - 2)
-
 # Vector with initial states
 v_state_init <- c(H  = 1, 
                   P  = 0, 
@@ -423,13 +417,28 @@ v_state_init <- c(H  = 1,
                   DC = 0,
                   CInc = 0)
 
+# Generate DES parameters
+l_params_des <- list()
+for (event in names(l_params_ode)) {
+  l_params_des[[substr(event, 3, nchar(event))]] <- list(
+    distr = "exp",
+    params = list(rate = l_params_ode[[event]]))
+}
+
+# Set seed for parallelization
+set.seed(seed, kind = "L'Ecuyer-CMRG")
+
+# If running locally, use all available cores except for reserved ones
+registerDoParallel(cores = detectCores(logical = TRUE) - 2)
+
+
 # Solves the system of ODEs an returns the proportion or number of the 
 # population in each of the states or compartments at the user-specified times
 # in a data.frame in wide format
 df_cancer_cohort_wide <- as.data.table(lsoda(y     = v_state_init, 
                                              times = 0:max_age, 
                                              func  = cancer_cohort_ode, 
-                                             parms = l_params))
+                                             parms = l_params_ode))
 
 # Map age range groups
 df_cancer_cohort_wide[, `:=` (age_idx = findInterval(time, v_ages),
@@ -462,7 +471,7 @@ stime <- system.time({
     .inorder=FALSE, 
     .packages=c("data.table","tidyverse")) %dopar% {
       # Simulate cohort
-      m_patients <- cancer_des(n_cohort, l_params)
+      m_patients <- cancer_des(n_cohort, l_params_des)
       
       # Calculate prevalence (cross-sectional)
       summ_prevalence <- calc_prevalence(

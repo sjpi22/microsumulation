@@ -92,47 +92,39 @@ calc_prevalence <- function(m_patients,
     
     # Assign sample ages if not given
     if (is.null(sample_var)) {
-      # Sample age of study
-      if (is.null(dt_sample_ages)) {
-        dt_sample_ages <- data.table(pt_id = m_patients[[id_var]])
-        dt_sample_ages[, sample_age := runif(.N, min(v_ages), max(v_ages))]
+      # If sample ages are provided in separate data table
+      if (!is.null(dt_sample_ages)) {
+        # Set patient ID as key of sample age data table
+        setkeyv(dt_sample_ages, id_var)
+        
+        # Merge sample age to patient data table
+        m_patients[dt_sample_ages, `:=` (sample_age = i.sample_age)]
+      } else {
+        # Uniformly sample ages
+        m_patients[, sample_age := runif(.N, min(v_ages), max(v_ages))]
       }
-      
-      # Get age range of sample age
-      dt_sample_ages[, age_idx := findInterval(sample_age, v_ages)]
-      dt_sample_ages[, age_start := v_ages[age_idx], by = age_idx]
-      
-      # Set patient ID as key of sample age data table
-      setkeyv(dt_sample_ages, id_var)
-      
-      # Rename ID if necessary
-      if (id_var != "pt_id") setnames(dt_sample_ages, "pt_id", id_var)
-      
-      # Merge sample age to patient data table
-      m_patients[dt_sample_ages, `:=` (sample_age = i.sample_age,
-                                       age_start = i.age_start)]
     } else {
       # Rename given sample variable
       if (sample_var != "sample_age") {
         if (!is.null(m_patients[["sample_age"]])) m_patients[, sample_age := NULL] # Remove sample_age variable from data table if already present
         setnames(m_patients, sample_var, "sample_age") # Replace name of sample age variable to sample_age
       }
-      
-      # Save age_idx variable if it will be overwritten
-      if ("age_idx" %in% colnames(m_patients)) {
-        age_idx_saved <- m_patients$age_idx
-      }
-      
-      # Get age range of sample age
-      m_patients[, age_idx := findInterval(sample_age, v_ages)]
-      m_patients[, age_start := v_ages[age_idx], by = age_idx]
-      
-      # Replace age_idx variable
-      if (exists("age_idx_saved")) {
-        m_patients[, age_idx := age_idx_saved]
-      } else {
-        m_patients[, age_idx := NULL]
-      }
+    }
+    
+    # Save age_idx variable if it will be overwritten
+    if ("age_idx" %in% colnames(m_patients)) {
+      age_idx_saved <- m_patients$age_idx
+    }
+    
+    # Get age range of sample age
+    m_patients[, age_idx := findInterval(sample_age, v_ages)]
+    m_patients[, age_start := v_ages[age_idx], by = age_idx]
+    
+    # Replace age_idx variable
+    if (exists("age_idx_saved")) {
+      m_patients[, age_idx := age_idx_saved]
+    } else {
+      m_patients[, age_idx := NULL]
     }
     
     # Calculate cross-sectional prevalence by age group among people not censored by sample age

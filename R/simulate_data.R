@@ -13,20 +13,18 @@ cancer_des <- function(n, l_params) {
   setkey(m_patients, pt_id)
   
   # Simulate time to death from other causes, preclinical cancer, clinical cancer, and death from cancer
-  with(l_params, {
-    m_patients[, `:=` (time_Do = rexp(.N, r_Do),
-                       time_P  = rexp(.N, r_P),
-                       time_PC = rexp(.N, r_PC),
-                       time_CD = rexp(.N, r_CD))]
-    
-    # Calculate time from birth to clinical cancer and death from cancer
-    m_patients[, `:=` (time_C  = time_P + time_PC,
-                       time_Dc = time_P + time_PC + time_CD)]
-    
-    # Calculate time to death and cause of death
-    m_patients[, `:=` (time_D = pmin(time_Do, time_Dc),
-                       Dc = (time_Dc < time_Do))]
-  })
+  for (event in names(l_params)) {
+    m_patients[, paste0("time_", event) := do.call(paste0("r", l_params[[event]][["distr"]]),
+                                                   args = c(list(.N), l_params[[event]][["params"]]))]
+  }
+  
+  # Calculate time from birth to clinical cancer and death from cancer
+  m_patients[, `:=` (time_C  = time_P + time_PC,
+                     time_Dc = time_P + time_PC + time_CD)]
+  
+  # Calculate time to death and cause of death
+  m_patients[, `:=` (time_D = pmin(time_Do, time_Dc),
+                     Dc = (time_Dc < time_Do))]
   
   return(m_patients)
 }
