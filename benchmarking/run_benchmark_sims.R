@@ -11,6 +11,7 @@ options(scipen = 999) # View data without scientific notation
 ###### 1.1 Load packages
 library(tidyverse)
 library(data.table)
+library(ggplot2)
 
 ###### 1.2 Load functions
 
@@ -39,6 +40,10 @@ p_cancer   <- 0.5     # Percentage at risk of preclinical cancer
 seed       <- 123     # Random seed
 conf_level <- 0.95    # Confidence level
 n_sim      <- 1000    # Number of simulations
+v_times    <- seq(0, 100, 0.5) # Time points for Weibull distribution
+plt_size_text <- 18
+plt_size_small <- 5/6*plt_size_text
+path_weibull <- "benchmarking/distr_weibull.pdf" # Path to save Weibull distribution plot
 path_benchmark <- "benchmarking/result.rds" # Path to save results
 
 ###### 2.2 Time-to-event parameters
@@ -74,6 +79,30 @@ l_age_exp <- list(
 
 # Set seed for reproducibility
 set.seed(seed)
+
+# Create data to plot Weibull distribution
+df_weibull <- data.frame(t = v_times,
+                         cdf = query_distr("p", v_times, l_params_cancer[["P"]][["distr"]], l_params_cancer[["P"]][["params"]]))
+
+# Plot Weibull distribution
+plot_weibull <- ggplot(df_weibull, 
+       aes(x = t, y = cdf)) +
+  geom_line() +
+  scale_fill_hue(h = c(180, 300)) +
+  labs(x = "Age",
+       y = "CDF") +
+  theme_bw() + 
+  theme(plot.title = element_blank(),
+        axis.text.x = element_text(size = plt_size_small),
+        axis.text.y = element_text(size = plt_size_small),
+        axis.title.x = element_text(size = plt_size_small),
+        axis.title.y = element_text(size = plt_size_small),
+        legend.title = element_text(size = plt_size_small),
+        legend.text = element_text(size = plt_size_small))
+
+ggsave(path_weibull, 
+       plot = plot_weibull, 
+       width = 6, height = 4, dpi = 300)
 
 
 #### 4. Analysis  ===========================================
