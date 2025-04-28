@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 #SBATCH --job-name=run_benchmark_sims
 #SBATCH --nodes=1
-#SBATCH --time=2:00:00
-#SBATCH --mem=3G
+#SBATCH --time=1:00:00
+#SBATCH --mem=1G
 #SBATCH --output=benchmarking/run_benchmark_sims.log
 #SBATCH --mail-user=sjpi@stanford.edu
 #SBATCH --mail-type=ALL

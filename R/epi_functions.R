@@ -73,11 +73,11 @@ calc_prevalence <- function(m_patients,
     age_end = v_ages[-1]
   )
   
-  # Ensure that key is set for cohort data
-  if (is.null(key(m_patients))) setkeyv(m_patients, id_var)
-  
   # Cross-sectional vs. longitudinal formulation
   if (method == "cs") {
+    # Ensure that key is set for cohort data
+    if (is.null(key(m_patients))) setkeyv(m_patients, id_var)
+    
     # Save variables that will be overwritten
     l_overwrite <- list()
     for (varname in c("sample_age", "age_start", "fl_case")) {
@@ -111,34 +111,23 @@ calc_prevalence <- function(m_patients,
       }
     }
     
-    # Save age_idx variable if it will be overwritten
-    if ("age_idx" %in% colnames(m_patients)) {
-      age_idx_saved <- m_patients$age_idx
-    }
-    
     # Get age range of sample age
-    m_patients[, age_idx := findInterval(sample_age, v_ages)]
-    m_patients[, age_start := v_ages[age_idx], by = age_idx]
-    
-    # Replace age_idx variable
-    if (exists("age_idx_saved")) {
-      m_patients[, age_idx := age_idx_saved]
-    } else {
-      m_patients[, age_idx := NULL]
-    }
+    m_patients[, age_start := v_ages[findInterval(sample_age, v_ages)]]
     
     # Calculate cross-sectional prevalence by age group among people not censored by sample age
     m_patients[get(censor_var) > sample_age, fl_case := (get(start_var) <= sample_age & get(end_var) > sample_age)]
     m_patients[get(censor_var) > sample_age & is.na(fl_case), fl_case := F] # Reset NA to FALSE
-    summ_prevalence <- m_patients[get(censor_var) > sample_age, .(
+    dt_prevalence <- m_patients[get(censor_var) > sample_age, .(
       n_total = .N,
-      n_cases = sum(fl_case),
-      value = mean(fl_case)), by = age_start]
-    summ_prevalence <- merge(dt_ages, summ_prevalence, by = "age_start", all.x = T)
+      n_cases = sum(fl_case)), 
+      by = age_start]
+    dt_prevalence <- merge(dt_ages, dt_prevalence, by = "age_start", all.x = T)
+    setnafill(dt_prevalence, cols = c("n_total", "n_cases"), fill = 0) # Fill NA with 0
+    dt_prevalence[, value := n_cases / n_total]
     
     # If required to output uncertainty estimates
     if (output_uncertainty) {
-      ci_prop(summ_prevalence, 
+      ci_prop(dt_prevalence, 
               conf_level = conf_level,
               calc_se = TRUE)
     }
@@ -166,10 +155,9 @@ calc_prevalence <- function(m_patients,
     for (varname in names(l_overwrite)) {
       m_patients[, (varname) := l_overwrite[[varname]]]
     }
-    
   } else if (method == "long") {
     # Calculate prevalence in the given age ranges
-    summ_prevalence <- cbind(dt_ages, t(mapply(
+    dt_prevalence <- cbind(dt_ages, t(mapply(
       function(age_start, age_end) {
         denom <- unname(unlist(m_patients[, sum(pmax(pmin(get(censor_var), age_end) - age_start, 0))]))
         num <- unname(unlist(m_patients[, sum(pmax(pmin(get(end_var), get(censor_var), age_end, na.rm = TRUE) - pmax(pmin(get(start_var), Inf, na.rm = T), age_start, na.rm = TRUE), 0))]))
@@ -213,26 +201,28 @@ calc_prevalence <- function(m_patients,
     dt_counts[age_idx != age_idx_ub, `:=` (age_grp_ub = v_ages[age_idx_ub]), by = age_idx_ub]
     
     # Sum counts by age group except upper boundary
-    summ_prevalence <- dt_counts[age_start < max(v_ages), 
-                                 .(person_years_cases = sum(person_years_cases),
-                                   person_years_total = sum(person_years_total)),
-                                 by = age_start]
+    dt_prevalence <- dt_counts[age_start < max(v_ages), 
+                               .(person_years_cases = sum(person_years_cases),
+                                 person_years_total = sum(person_years_total)),
+                               by = age_start]
     
     # Merge age ranges
-    summ_prevalence <- merge(dt_ages, summ_prevalence, by = "age_start")
+    dt_prevalence <- merge(dt_ages, dt_prevalence, by = "age_start")
     
     # Extract boundary counts
-    summ_prevalence_ub <- dt_counts[!is.na(age_grp_ub), ]
+    dt_prevalence_ub <- dt_counts[!is.na(age_grp_ub), ]
     
     # Add boundary counts to each age group
-    summ_prevalence[, `:=` (person_years_cases = person_years_cases + summ_prevalence_ub$person_years_cases,
-                            person_years_total = person_years_total + summ_prevalence_ub$person_years_total)]
+    dt_prevalence[, `:=` (person_years_cases = person_years_cases + dt_prevalence_ub$person_years_cases,
+                          person_years_total = person_years_total + dt_prevalence_ub$person_years_total)]
     
     # Calculate prevalence
-    summ_prevalence[, value := person_years_cases/person_years_total]
+    dt_prevalence[, value := person_years_cases/person_years_total]
+  } else {
+    stop("Invalid method specified. Use 'cs', 'long', or 'rcs'.")
   }
   
-  return(summ_prevalence)
+  return(dt_prevalence)
 }
 
 
@@ -480,8 +470,6 @@ calc_nlesions <- function(m_lesions,
 #' @param strat_var Optional name (string) of variable for further stratification.
 #' @param v_ages A numeric vector of ages at which to estimate incidence. If \code{NULL}, 
 #'   incidence will be calculated across the age range of the population.
-#' @param method Method for calculating incidence. Currently \code{"long"} for 
-#'   longitudinal is implemented.
 #' @param rate_unit Quantity to divide incidence rate by for reporting.
 #' @param output_uncertainty Binary indicator for whether to output standard
 #'   errors and confidence intervals.
@@ -499,7 +487,7 @@ calc_nlesions <- function(m_lesions,
 #' )
 #' calc_incidence(
 #'   m_patients = m_patients,
-#'   start_var = "time_S",
+#'   time_var = "time_S",
 #'   censor_var = "time_D",
 #'   v_ages = seq(50, 60, by = 5)
 #' )
@@ -513,10 +501,14 @@ calc_incidence <- function(m_patients,
                            id_var = "pt_id",
                            strat_var = NULL,
                            v_ages = NULL,
-                           method = "long",
                            rate_unit = 100000,
                            output_uncertainty = FALSE,
                            conf_level = 0.95) {
+  # If v_ages is NULL, calculate incidence across entire age range of population
+  if (is.null(v_ages)) {
+    v_ages <- c(0, m_patients[, max(get(censor_var))])
+  }
+  
   # Create age category labels
   age_bounds <- unique(c(0, v_ages)) # Add 0 as lower bound if necessary
   age_ranges <- paste(age_bounds[-length(age_bounds)], 
@@ -526,7 +518,7 @@ calc_incidence <- function(m_patients,
                        age_end = age_bounds[-1])
   
   # Exposure time by age range
-  person_years_at_risk <- data.frame(
+  person_years_at_risk <- data.table(
     age_df, 
     person_years_total = mapply(
       function(age_start, age_end) {
@@ -596,7 +588,6 @@ calc_incidence <- function(m_patients,
       event_counts[, c("ci_lb", "ci_ub") := NA]
     }
   }
-  
   return(event_counts)
 }
 

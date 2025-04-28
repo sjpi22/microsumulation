@@ -1,6 +1,3 @@
-###########################  Unit test: Incidence   ################
-#
-#  Objective: Run unit tests for calculating incidence
 ########################### <<<<<>>>>> ##############################################
 
 rm(list = ls()) # Clean environment
@@ -78,7 +75,6 @@ test_that("Test accuracy of longitudinal incidence", {
     time_var = "time_C", 
     censor_var = "time_D",
     v_ages = v_ages, 
-    method = "long",
     rate_unit = rate_unit)
   
   # Check expected value of incidence
@@ -96,7 +92,6 @@ test_that("Test accuracy of longitudinal incidence", {
     time_var = "time_C", 
     censor_var = "time_censor",
     v_ages = v_ages, 
-    method = "long",
     rate_unit = rate_unit)
   
   # Check expected value of incidence
@@ -176,7 +171,6 @@ stime <- system.time({
         m_patients, 
         time_var = "time_C", 
         censor_var = "time_D", 
-        method = "long",
         v_ages = v_ages,
         output_uncertainty = T,
         rate_unit = rate_unit)
@@ -186,7 +180,6 @@ stime <- system.time({
         m_patients, 
         time_var = "time_C", 
         censor_var = "time_C", 
-        method = "long",
         v_ages = v_ages,
         output_uncertainty = T,
         rate_unit = rate_unit)
