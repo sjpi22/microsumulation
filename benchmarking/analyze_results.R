@@ -53,9 +53,9 @@ max_time <- max(unlist(lapply(res$time, function(x) do.call(rbind, x)[, "mean"])
 dt_stats <- dt_time <- plt_stats <- plt_time <- list()
 for (i in 1:length(res$time)) {
   if (i == 1) {
-    xlab = "Single interval from age 30 to 80"
+    label = "Single interval from age 30 to 80"
   } else {
-    xlab = "10-year intervals from age 30 to 80"
+    label = "10-year intervals from age 30 to 80"
   }
   
   # Bar plot of time
@@ -70,6 +70,7 @@ for (i in 1:length(res$time)) {
   # Plot mean value with SD
   dodge_width <- dodge_width_factor*dt_stats[[i]]$age_range[1]
   error_width <- error_width_factor*dt_stats[[i]]$age_range[1]
+  if (i == 1) {
   plt_stats[[i]] <- ggplot(dt_stats[[i]], 
                            aes(x = age_median, y = mean_scaled, color = method, fill = method)) +
     geom_hline(yintercept = 0, linetype = "dashed") +
@@ -81,15 +82,39 @@ for (i in 1:length(res$time)) {
     scale_color_hue(h = c(180, 300), labels = v_labels, guide = "none") +
     scale_fill_hue(h = c(180, 300), labels = v_labels, guide = "none") +
     labs(x = "Age",
-         y = "Percentage difference") +
+         y = "Percentage difference",
+         title = label) +
     theme_bw() + 
-    theme(plot.title = element_blank(),
-          axis.text.x = element_text(size = plt_size_small),
+    theme(plot.title = element_text(size = plt_size_small),
+          axis.text.x = element_blank(),
           axis.text.y = element_text(size = plt_size_small),
+          axis.title.x = element_blank(),
           axis.title.y = element_text(size = plt_size_small),
-          axis.title = element_text(size = plt_size_small),
           legend.title = element_text(size = plt_size_small),
           legend.text = element_text(size = plt_size_small))
+  } else {
+    plt_stats[[i]] <- ggplot(dt_stats[[i]], 
+                             aes(x = age_median, y = mean_scaled, color = method, fill = method)) +
+      geom_hline(yintercept = 0, linetype = "dashed") +
+      geom_point(position = position_dodge(width = dodge_width), size = 3) +
+      geom_errorbar(aes(ymin = mean_scaled - sd_scaled, ymax = mean_scaled + sd_scaled), 
+                    width = error_width, position = position_dodge(width = dodge_width)) +
+      scale_x_continuous(breaks = seq(min(dt_stats[[i]]$age_start), max(dt_stats[[i]]$age_end), dt_stats[[i]]$age_range[1])) +
+      coord_cartesian(xlim = c(min(dt_stats[[i]]$age_start), max(dt_stats[[i]]$age_end))) +
+      scale_color_hue(h = c(180, 300), labels = v_labels, guide = "none") +
+      scale_fill_hue(h = c(180, 300), labels = v_labels, guide = "none") +
+      labs(x = "Age",
+           y = "Percentage difference",
+           title = label) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = plt_size_small),
+            axis.text.x = element_text(size = plt_size_small),
+            axis.text.y = element_text(size = plt_size_small),
+            axis.title.x = element_text(size = plt_size_small),
+            axis.title.y = element_text(size = plt_size_small),
+            legend.title = element_text(size = plt_size_small),
+            legend.text = element_text(size = plt_size_small))
+  }
   
   # Bar plot of time
   plt_time[[i]] <- ggplot(data.frame(dt_time[[i]], method = rownames(dt_time[[i]])), 
@@ -99,13 +124,12 @@ for (i in 1:length(res$time)) {
     scale_fill_hue(h = c(180, 300), labels = v_labels) +
     coord_cartesian(ylim = c(0, max_time)) +
     labs(fill = "Formulation",
-         x = xlab,
          y = "Seconds") +
     theme_bw() + 
-    theme(plot.title = element_blank(),
+    theme(plot.title = element_text(size = plt_size_small),
           axis.text.x = element_blank(),
           axis.text.y = element_text(size = plt_size_small),
-          axis.title.x = element_text(size = plt_size_small),
+          axis.title.x = element_blank(),
           axis.title.y = element_text(size = plt_size_small),
           legend.title = element_text(size = plt_size_small),
           legend.text = element_text(size = plt_size_small))
