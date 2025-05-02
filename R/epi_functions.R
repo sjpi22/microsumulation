@@ -270,6 +270,342 @@ ci_prop <- function(dt_cases,
 }
 
 
+#' Calculate Age-Specific Incidence from Longitudinal Data
+#'
+#' Estimates the incidence of a condition at specific ages from a matrix or 
+#' data frame of patient-level time-to-event data.
+#'
+#' @param m_patients A data frame or matrix where each row represents a patient, 
+#'   and columns include age at event onset, transition, and censoring.
+#' @param time_var The name (string) of the variable in \code{m_patients} 
+#'   indicating age at condition onset.
+#' @param censor_var The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
+#'   age are excluded from the denominator at that age.
+#' @param id_var The name (string) of the variable indicating the patient ID.
+#' @param strat_var Optional name (string) of variable for further stratification.
+#' @param v_ages A numeric vector of ages at which to estimate incidence. If \code{NULL}, 
+#'   incidence will be calculated across the age range of the population.
+#' @param rate_unit Quantity to divide incidence rate by for reporting.
+#' @param output_uncertainty Binary indicator for whether to output standard
+#'   errors and confidence intervals.
+#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
+#'
+#' @return A data table with estimated incidence in each age range.
+#'
+#' @examples
+#' # Example usage with simulated data:
+#' m_patients <- data.table(
+#'   pt_id = 1:5,
+#'   time_S = c(45, 50, 60, 55, 47), # Time to disease onset
+#'   time_R = c(52, 65, 70, 58, 55), # Time to recovery
+#'   time_D = c(50, 75, 68, 60, 90)  # Time to death
+#' )
+#' calc_incidence(
+#'   m_patients = m_patients,
+#'   time_var = "time_S",
+#'   censor_var = "time_D",
+#'   v_ages = seq(50, 60, by = 5)
+#' )
+#' 
+#' @import data.table
+#' @importFrom dplyr %>%
+#' @export
+calc_incidence <- function(m_patients, 
+                           time_var, 
+                           censor_var, 
+                           id_var = "pt_id",
+                           strat_var = NULL,
+                           v_ages = NULL,
+                           rate_unit = 100000,
+                           output_uncertainty = FALSE,
+                           conf_level = 0.95) {
+  # If v_ages is NULL, calculate incidence across entire age range of population
+  if (is.null(v_ages)) {
+    v_ages <- c(0, m_patients[, max(get(censor_var))])
+  }
+  
+  # Create age category labels
+  age_bounds <- unique(c(0, v_ages)) # Add 0 as lower bound if necessary
+  age_ranges <- paste(age_bounds[-length(age_bounds)], 
+                      age_bounds[-1], sep = "-")
+  age_df <- data.frame(age_range = age_ranges, 
+                       age_start = age_bounds[-length(age_bounds)],
+                       age_end = age_bounds[-1])
+  
+  # Exposure time by age range
+  person_years_at_risk <- data.table(
+    age_df, 
+    person_years_total = mapply(
+      function(age_start, age_end) {
+        person_years_total = m_patients[, sum(pmax(pmin(get(censor_var), age_end) - age_start, 0))]
+      }, age_df$age_start, age_df$age_end)
+  ) %>%
+    filter(age_range %in% age_df$age_range[age_df$age_start %in% v_ages[-length(v_ages)]])
+  
+  # Set grouping variables
+  grouping_vars <- "age_range"
+  if(!is.null(strat_var)) grouping_vars <- c(grouping_vars, strat_var)
+  
+  # Set rate unit
+  if(is.null(rate_unit)) rate_unit <- 1
+  
+  # Number of events by category
+  event_counts <- m_patients[get(time_var) <= pmin(get(censor_var), max(age_bounds))][
+    , age_range := age_ranges[findInterval(get(time_var), age_bounds)]
+  ][, .N, by = grouping_vars]
+  setnames(event_counts, "N", "n_events")
+  
+  # Make sure all values of stratifying variables are represented
+  if(!is.null(strat_var)) {
+    # Get sorted values of stratifying variable
+    strat_var_vals <- sort(unique(m_patients[[strat_var]]))
+    
+    # Initialize dataframe with all combinations of age range and stratifying variables
+    all_var_vals <- data.frame(
+      age_range = rep(sort(unique(event_counts$age_range)), each = length(strat_var_vals))
+    )
+    
+    # Add stratifying variables
+    all_var_vals[, as.character(strat_var)] <- rep(strat_var_vals, length(unique(event_counts$age_range)))
+    
+    # Merge event counts
+    event_counts <- all_var_vals %>%
+      left_join(event_counts, by = grouping_vars)
+  }
+  
+  if(nrow(event_counts) > 0) {
+    # Merge event counts and person-years at risk
+    event_counts <- person_years_at_risk %>%
+      left_join(event_counts, by = "age_range") %>%
+      mutate(n_events = replace_na(n_events, 0)) %>%
+      mutate(
+        unit = rate_unit,
+        value = n_events / person_years_total * rate_unit
+      ) %>%
+      setDT()
+    
+    # Calculate standard error and confidence intervals
+    if (output_uncertainty) {
+      ci_rate(event_counts, 
+              conf_level = conf_level, 
+              rate_unit = rate_unit,
+              calc_se = TRUE)
+    }
+  } else {
+    event_counts <- person_years_at_risk %>%
+      mutate(n_events = 0,
+             unit = rate_unit,
+             value = 0) %>%
+      setDT()
+    
+    if (output_uncertainty) {
+      event_counts[, se := 0]
+      event_counts[, c("ci_lb", "ci_ub") := NA]
+    }
+  }
+  return(event_counts)
+}
+
+
+#' Calculate Confidence Interval and Standard Error of Rate
+#'
+#' Calculates confidence interval and standard error of a rate (e.g., incidence 
+#' rate) with side effects.
+#'
+#' @param dt_event A data table with columns for the number of events 
+#'   and person-years of exposure.
+#' @param rate_unit Quantity to divide incidence rate by for reporting.
+#' @param conf_level Confidence level for confidence intervals, default is 0.95.
+#' @param calc_se Indicator for whether to calculate standard error.
+#' @param var_event Name of variable with number of events.
+#' @param var_total Name of variable with total number of population.
+#'
+#' @return NULL, updates \code{dt_event} with confidence interval and standard 
+#'   error columns.
+#' 
+#' @import data.table
+#' @export
+ci_rate <- function(dt_event, 
+                    conf_level = 0.95, 
+                    rate_unit = 1,
+                    calc_se = FALSE,
+                    var_event = "n_events",
+                    var_total = "person_years_total"
+) {
+  # Calculate standard error
+  if (calc_se) {
+    dt_event[, `:=` (se = sqrt(get(var_event))/get(var_total)*rate_unit)]
+  }
+  
+  # Calculate chi-squared critical values
+  dt_event[, `:=` (chi2_lb = qchisq((1-conf_level)/2, 2*get(var_event)),
+                   chi2_ub = qchisq((1+conf_level)/2, 2*(get(var_event) + 1)))]
+  
+  # Calculate CI from chi-squared critical values
+  dt_event[, `:=` (ci_lb = chi2_lb/2/get(var_total),
+                   ci_ub = chi2_ub/2/get(var_total))]
+  
+  # Adjust for rate unit
+  if (rate_unit != 1) {
+    dt_event[, `:=` (ci_lb = ci_lb * rate_unit,
+                     ci_ub = ci_ub * rate_unit)]
+  }
+  return(NULL)
+}
+
+
+#' Calculate Risk
+#' 
+#' Calculate age-conditional or lifetime risk of a condition
+#' 
+#' @param m_patients A data frame or matrix where each row represents a patient, 
+#'   and columns include age at event onset, transition, and censoring.
+#' @param start_var The name (string) of the variable in \code{m_patients} 
+#'   indicating the start age of the condition.
+#' @param censor_var The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
+#'   age are excluded from the sum. If NULL, \code{sum_var} will be used.
+#' @param min_age Minimum age at which to begin evaluating risk. Default 0.
+#' @param max_age Maximum age at which to evaluate risk.
+#' @param output_uncertainty Binary indicator for whether to output standard
+#'   errors and confidence intervals.
+#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
+#'
+calc_risk <- function(
+    m_patients, 
+    start_var,
+    censor_var,
+    min_age = 0,
+    max_age = NULL,
+    output_uncertainty = FALSE,
+    conf_level = 0.95
+) {
+  # Set minimum age as 0 and maximum age as maximum observed age in data if not provided
+  if (is.null(min_age)) min_age <- 0
+  if (is.null(max_age)) max_age <- m_patients[, max(get(censor_var))]
+  
+  # Among individuals who are uncensored without condition by min_age,
+  # calculate number that develop condition before earliest of death and max_age
+  res <- m_patients[pmin(get(start_var), get(censor_var), na.rm = T) >= min_age, 
+                    .(n_cases = sum(get(start_var) < pmin(max_age, get(censor_var))),
+                      n_total = .N)]
+  
+  # Calculate risk
+  res[, value := n_cases/n_total]
+  
+  # Calculate confidence intervals and merge to summary table if needed
+  if (output_uncertainty) {
+    df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, res$n_cases, res$n_total)))
+    res[, c("ci_lb", "ci_ub") := df_confint]
+    
+    # Estimate SE from CI
+    res[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+  }
+}
+
+
+#' Calculate Categorical Distribution
+#'
+#' Calculates a categorical distribution (such as cancer stage or primary lesion 
+#' type) from patient-level data at a point in time.
+#'
+#' @param m_patients A data frame or matrix where each row represents a patient, 
+#'   and columns include age at event onset, transition, and censoring.
+#' @param grouping_var The name (string) of the variable indicating categories.
+#' @param event_var The name (string) of the variable in \code{m_patients} 
+#'   indicating age of event.
+#' @param censor_var The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before the event
+#'   age are excluded from the denominator.
+#' @param groups_expected Vector of expected categories in case not all are 
+#'   represented in the patient data.
+#' @param min_age Minimum age at which to begin evaluating distribution. 
+#'   Default 0.
+#' @param output_uncertainty Binary indicator for whether to output standard
+#'   errors and confidence intervals.
+#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
+#'
+#' @return A data table with proportion in each category.
+#'
+#' @examples
+#' # Example usage with simulated data:
+#' m_patients <- data.table(
+#'   pt_id = 1:5,
+#'   time_cancer = c(45, 50, 60, 55, 47), # Time to cancer diagnosis
+#'   stage = c(1, 3, 4, 3, 1), # Stage at diagnosis
+#'   time_D = c(50, 75, 68, 60, 90)  # Time to death
+#' )
+#' calc_distr(
+#'   m_patients = m_patients,
+#'   grouping_var = "stage",
+#'   event_var = "time_cancer",
+#'   censor_var = "time_D",
+#'   groups_expected = 1:4
+#' )
+#' 
+#' @import data.table
+#' @importFrom dplyr %>%
+#' @export
+calc_distr <- function(m_patients, 
+                       grouping_var, 
+                       event_var, 
+                       censor_var, 
+                       groups_expected, 
+                       min_age = 0, 
+                       output_uncertainty = FALSE,
+                       conf_level = 0.95) {
+  # Count patients diagnosed at each stage
+  cts <- m_patients[get(event_var) >= min_age & get(event_var) < get(censor_var), 
+                    .(n_cases = .N), by = grouping_var]
+  
+  # Create dataframe of expected stages if necessary
+  if (nrow(cts) < length(groups_expected)) {
+    df_groups_expected <- setNames(data.frame(groups_expected), grouping_var)
+    
+    # If no patients diagnosed at any stage, create dataframe of zeros
+    if (nrow(cts) == 0) {
+      cts <- df_groups_expected %>%
+        mutate(n_cases = 0) %>%
+        setDT()
+    } else {
+      # Ensure that all stages are represented with count of 0 if necessary
+      cts <- df_groups_expected %>%
+        left_join(cts, by = grouping_var) %>%
+        mutate_all(~replace(., is.na(.), 0)) %>%
+        setDT()
+    }
+  } else {
+    # Order
+    cts <- cts[order(get(grouping_var))]
+  }
+  
+  if (sum(cts$n_cases) == 0) {
+    cts[, c("n_total", "value") := 0]
+    
+    # Add CI and SE if needed
+    if (output_uncertainty) {
+      cts[, c("ci_lb", "ci_ub", "se") := 0]
+    }
+  } else {
+    # Get percentage of patients at each stage
+    cts[, n_total := sum(n_cases)]
+    cts[, value := n_cases / n_total]
+    
+    # Calculate confidence intervals and merge to summary table if needed
+    if (output_uncertainty) {
+      df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, cts$n_cases, cts$n_total)))
+      cts[, c("ci_lb", "ci_ub") := df_confint]
+      
+      # Estimate SE from CI
+      cts[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
+    }
+  }
+  
+  return(cts)
+}
+
+
 #' Calculate Number of Lesions from Longitudinal Data (Lesion Multiplicity)
 #'
 #' Estimates the distribution for the number of lesions among individuals with 
@@ -454,291 +790,6 @@ calc_nlesions <- function(m_lesions,
 }
 
 
-#' Calculate Age-Specific Incidence from Longitudinal Data
-#'
-#' Estimates the incidence of a condition at specific ages from a matrix or 
-#' data frame of patient-level time-to-event data.
-#'
-#' @param m_patients A data frame or matrix where each row represents a patient, 
-#'   and columns include age at event onset, transition, and censoring.
-#' @param time_var The name (string) of the variable in \code{m_patients} 
-#'   indicating age at condition onset.
-#' @param censor_var The name (string) of the variable indicating age at censoring 
-#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
-#'   age are excluded from the denominator at that age.
-#' @param id_var The name (string) of the variable indicating the patient ID.
-#' @param strat_var Optional name (string) of variable for further stratification.
-#' @param v_ages A numeric vector of ages at which to estimate incidence. If \code{NULL}, 
-#'   incidence will be calculated across the age range of the population.
-#' @param rate_unit Quantity to divide incidence rate by for reporting.
-#' @param output_uncertainty Binary indicator for whether to output standard
-#'   errors and confidence intervals.
-#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
-#'
-#' @return A data table with estimated incidence in each age range.
-#'
-#' @examples
-#' # Example usage with simulated data:
-#' m_patients <- data.table(
-#'   pt_id = 1:5,
-#'   time_S = c(45, 50, 60, 55, 47), # Time to disease onset
-#'   time_R = c(52, 65, 70, 58, 55), # Time to recovery
-#'   time_D = c(50, 75, 68, 60, 90)  # Time to death
-#' )
-#' calc_incidence(
-#'   m_patients = m_patients,
-#'   time_var = "time_S",
-#'   censor_var = "time_D",
-#'   v_ages = seq(50, 60, by = 5)
-#' )
-#' 
-#' @import data.table
-#' @importFrom dplyr %>%
-#' @export
-calc_incidence <- function(m_patients, 
-                           time_var, 
-                           censor_var, 
-                           id_var = "pt_id",
-                           strat_var = NULL,
-                           v_ages = NULL,
-                           rate_unit = 100000,
-                           output_uncertainty = FALSE,
-                           conf_level = 0.95) {
-  # If v_ages is NULL, calculate incidence across entire age range of population
-  if (is.null(v_ages)) {
-    v_ages <- c(0, m_patients[, max(get(censor_var))])
-  }
-  
-  # Create age category labels
-  age_bounds <- unique(c(0, v_ages)) # Add 0 as lower bound if necessary
-  age_ranges <- paste(age_bounds[-length(age_bounds)], 
-                      age_bounds[-1], sep = "-")
-  age_df <- data.frame(age_range = age_ranges, 
-                       age_start = age_bounds[-length(age_bounds)],
-                       age_end = age_bounds[-1])
-  
-  # Exposure time by age range
-  person_years_at_risk <- data.table(
-    age_df, 
-    person_years_total = mapply(
-      function(age_start, age_end) {
-        person_years_total = m_patients[, sum(pmax(pmin(get(censor_var), age_end) - age_start, 0))]
-      }, age_df$age_start, age_df$age_end)
-  ) %>%
-    filter(age_range %in% age_df$age_range[age_df$age_start %in% v_ages[-length(v_ages)]])
-  
-  # Set grouping variables
-  grouping_vars <- "age_range"
-  if(!is.null(strat_var)) grouping_vars <- c(grouping_vars, strat_var)
-  
-  # Set rate unit
-  if(is.null(rate_unit)) rate_unit <- 1
-  
-  # Number of events by category
-  event_counts <- m_patients[get(time_var) <= pmin(get(censor_var), max(age_bounds))][
-    , age_range := age_ranges[findInterval(get(time_var), age_bounds)]
-  ][, .N, by = grouping_vars]
-  setnames(event_counts, "N", "n_events")
-  
-  # Make sure all values of stratifying variables are represented
-  if(!is.null(strat_var)) {
-    # Get sorted values of stratifying variable
-    strat_var_vals <- sort(unique(m_patients[[strat_var]]))
-    
-    # Initialize dataframe with all combinations of age range and stratifying variables
-    all_var_vals <- data.frame(
-      age_range = rep(sort(unique(event_counts$age_range)), each = length(strat_var_vals))
-    )
-    
-    # Add stratifying variables
-    all_var_vals[, as.character(strat_var)] <- rep(strat_var_vals, length(unique(event_counts$age_range)))
-    
-    # Merge event counts
-    event_counts <- all_var_vals %>%
-      left_join(event_counts, by = grouping_vars)
-  }
-  
-  if(nrow(event_counts) > 0) {
-    # Merge event counts and person-years at risk
-    event_counts <- person_years_at_risk %>%
-      left_join(event_counts, by = "age_range") %>%
-      mutate(n_events = replace_na(n_events, 0)) %>%
-      mutate(
-        unit = rate_unit,
-        value = n_events / person_years_total * rate_unit
-      ) %>%
-      setDT()
-    
-    # Calculate standard error and confidence intervals
-    if (output_uncertainty) {
-      ci_rate(event_counts, 
-              conf_level = conf_level, 
-              rate_unit = rate_unit,
-              calc_se = TRUE)
-    }
-  } else {
-    event_counts <- person_years_at_risk %>%
-      mutate(n_events = 0,
-             unit = rate_unit,
-             value = 0) %>%
-      setDT()
-    
-    if (output_uncertainty) {
-      event_counts[, se := 0]
-      event_counts[, c("ci_lb", "ci_ub") := NA]
-    }
-  }
-  return(event_counts)
-}
-
-#' Calculate Confidence Interval and Standard Error of Rate
-#'
-#' Calculates confidence interval and standard error of a rate (e.g., incidence 
-#' rate) with side effects.
-#'
-#' @param dt_event A data table with columns for the number of events 
-#'   and person-years of exposure.
-#' @param rate_unit Quantity to divide incidence rate by for reporting.
-#' @param conf_level Confidence level for confidence intervals, default is 0.95.
-#' @param calc_se Indicator for whether to calculate standard error.
-#' @param var_event Name of variable with number of events.
-#' @param var_total Name of variable with total number of population.
-#'
-#' @return NULL, updates \code{dt_event} with confidence interval and standard 
-#'   error columns.
-#' 
-#' @import data.table
-#' @export
-ci_rate <- function(dt_event, 
-                    conf_level = 0.95, 
-                    rate_unit = 1,
-                    calc_se = FALSE,
-                    var_event = "n_events",
-                    var_total = "person_years_total"
-) {
-  # Calculate standard error
-  if (calc_se) {
-    dt_event[, `:=` (se = sqrt(get(var_event))/get(var_total)*rate_unit)]
-  }
-  
-  # Calculate chi-squared critical values
-  dt_event[, `:=` (chi2_lb = qchisq((1-conf_level)/2, 2*get(var_event)),
-                   chi2_ub = qchisq((1+conf_level)/2, 2*(get(var_event) + 1)))]
-  
-  # Calculate CI from chi-squared critical values
-  dt_event[, `:=` (ci_lb = chi2_lb/2/get(var_total),
-                   ci_ub = chi2_ub/2/get(var_total))]
-  
-  # Adjust for rate unit
-  if (rate_unit != 1) {
-    dt_event[, `:=` (ci_lb = ci_lb * rate_unit,
-                     ci_ub = ci_ub * rate_unit)]
-  }
-  return(NULL)
-}
-
-
-#' Calculate Categorical Distribution
-#'
-#' Calculates a categorical distribution (such as cancer stage or primary lesion 
-#' type) from patient-level data at a point in time.
-#'
-#' @param m_patients A data frame or matrix where each row represents a patient, 
-#'   and columns include age at event onset, transition, and censoring.
-#' @param grouping_var The name (string) of the variable indicating categories.
-#' @param event_var The name (string) of the variable in \code{m_patients} 
-#'   indicating age of event.
-#' @param censor_var The name (string) of the variable indicating age at censoring 
-#'   (e.g., death or loss to follow-up). Patients who are censored before the event
-#'   age are excluded from the denominator.
-#' @param groups_expected Vector of expected categories in case not all are 
-#'   represented in the patient data.
-#' @param min_age Minimum age at which to begin evaluating distribution. 
-#'   Default 0.
-#' @param output_uncertainty Binary indicator for whether to output standard
-#'   errors and confidence intervals.
-#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
-#'
-#' @return A data table with proportion in each category.
-#'
-#' @examples
-#' # Example usage with simulated data:
-#' m_patients <- data.table(
-#'   pt_id = 1:5,
-#'   time_cancer = c(45, 50, 60, 55, 47), # Time to cancer diagnosis
-#'   stage = c(1, 3, 4, 3, 1), # Stage at diagnosis
-#'   time_D = c(50, 75, 68, 60, 90)  # Time to death
-#' )
-#' calc_distr(
-#'   m_patients = m_patients,
-#'   grouping_var = "stage",
-#'   event_var = "time_cancer",
-#'   censor_var = "time_D",
-#'   groups_expected = 1:4
-#' )
-#' 
-#' @import data.table
-#' @importFrom dplyr %>%
-#' @export
-calc_distr <- function(m_patients, 
-                       grouping_var, 
-                       event_var, 
-                       censor_var, 
-                       groups_expected, 
-                       min_age = 0, 
-                       output_uncertainty = FALSE,
-                       conf_level = 0.95) {
-  # Count patients diagnosed at each stage
-  cts <- m_patients[get(event_var) >= min_age & get(event_var) < get(censor_var), 
-                    .(n_cases = .N), by = grouping_var]
-  
-  # Create dataframe of expected stages if necessary
-  if (nrow(cts) < length(groups_expected)) {
-    df_groups_expected <- setNames(data.frame(groups_expected), grouping_var)
-    
-    # If no patients diagnosed at any stage, create dataframe of zeros
-    if (nrow(cts) == 0) {
-      cts <- df_groups_expected %>%
-        mutate(n_cases = 0) %>%
-        setDT()
-    } else {
-      # Ensure that all stages are represented with count of 0 if necessary
-      cts <- df_groups_expected %>%
-        left_join(cts, by = grouping_var) %>%
-        mutate_all(~replace(., is.na(.), 0)) %>%
-        setDT()
-    }
-  } else {
-    # Order
-    cts <- cts[order(get(grouping_var))]
-  }
-  
-  if (sum(cts$n_cases) == 0) {
-    cts[, c("n_total", "value") := 0]
-    
-    # Add CI and SE if needed
-    if (output_uncertainty) {
-      cts[, c("ci_lb", "ci_ub", "se") := 0]
-    }
-  } else {
-    # Get percentage of patients at each stage
-    cts[, n_total := sum(n_cases)]
-    cts[, value := n_cases / n_total]
-    
-    # Calculate confidence intervals and merge to summary table if needed
-    if (output_uncertainty) {
-      df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, cts$n_cases, cts$n_total)))
-      cts[, c("ci_lb", "ci_ub") := df_confint]
-      
-      # Estimate SE from CI
-      cts[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
-    }
-  }
-  
-  return(cts)
-}
-
-
 #' Calculate Total Life Years
 #'
 #' Calculate total life years in cohort among those who are alive and disease-
@@ -807,7 +858,7 @@ calc_lifeyears <- function(
 #'   age are excluded from the denominator at that age.
 #' @param event_var The name (string) of the variable indicating the event that 
 #'   must occur before the censor time for an individual to be included. If 
-#'   \code{NULL}, \code{start_var} will be used.
+#'   \code{NULL}, \code{end_var} will be used.
 #'
 #' @return A data table with the mean duration.
 #'
@@ -819,7 +870,7 @@ calc_lifeyears <- function(
 #'   time_R = c(52, 65, 70, 58, 55), # Time to recovery
 #'   time_D = c(50, 75, 68, 60, 90)  # Time to death
 #' )
-#' calc_dwell_time(
+#' calc_duration(
 #'   m_patients = m_patients,
 #'   start_var = "time_S",
 #'   end_var = "time_R",
@@ -829,7 +880,7 @@ calc_lifeyears <- function(
 #' @import data.table
 #' @importFrom dplyr %>%
 #' @export
-calc_dwell_time <- function(
+calc_duration <- function(
     m_patients, 
     start_var,
     end_var,
@@ -837,56 +888,7 @@ calc_dwell_time <- function(
     event_var = NULL
 ) {
   # Get mean sojourn time among people diagnosed with cancer in lifetime
-  if (is.null(event_var)) event_var <- start_var
+  if (is.null(event_var)) event_var <- end_var
   res <- m_patients[get(event_var) < get(censor_var), mean(get(end_var) - get(start_var))]
   return(res)
-}
-
-#' Calculate Risk
-#' 
-#' Calculate age-conditional or lifetime risk of a condition
-#' 
-#' @param m_patients A data frame or matrix where each row represents a patient, 
-#'   and columns include age at event onset, transition, and censoring.
-#' @param start_var The name (string) of the variable in \code{m_patients} 
-#'   indicating the start age of the condition.
-#' @param censor_var The name (string) of the variable indicating age at censoring 
-#'   (e.g., death or loss to follow-up). Patients who are censored before a given 
-#'   age are excluded from the sum. If NULL, \code{sum_var} will be used.
-#' @param min_age Minimum age at which to begin evaluating risk. Default 0.
-#' @param max_age Maximum age at which to evaluate risk.
-#' @param output_uncertainty Binary indicator for whether to output standard
-#'   errors and confidence intervals.
-#' @param conf_level Confidence level for binomial confidence intervals, default is 0.95.
-#'
-calc_risk <- function(
-    m_patients, 
-    start_var,
-    censor_var,
-    min_age = 0,
-    max_age = NULL,
-    output_uncertainty = FALSE,
-    conf_level = 0.95
-) {
-  # Set minimum age as 0 and maximum age as maximum observed age in data if not provided
-  if (is.null(min_age)) min_age <- 0
-  if (is.null(max_age)) max_age <- m_patients[, max(get(censor_var))]
-  
-  # Among individuals who are uncensored without condition by min_age,
-  # calculate number that develop condition before earliest of death and max_age
-  res <- m_patients[pmin(get(start_var), get(censor_var), na.rm = T) >= min_age, 
-                    .(n_cases = sum(get(start_var) < pmin(max_age, get(censor_var))),
-                      n_total = .N)]
-  
-  # Calculate risk
-  res[, value := n_cases/n_total]
-  
-  # Calculate confidence intervals and merge to summary table if needed
-  if (output_uncertainty) {
-    df_confint <- data.frame(t(mapply(function(x, y) prop.test(x, y, conf.level = conf_level)$conf.int, res$n_cases, res$n_total)))
-    res[, c("ci_lb", "ci_ub") := df_confint]
-    
-    # Estimate SE from CI
-    res[, se := (ci_ub - ci_lb) / (2 * qnorm((1 + conf_level)/2))]
-  }
 }
