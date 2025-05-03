@@ -11,6 +11,7 @@ options(scipen = 999) # View data without scientific notation
 ###### 1.1 Load packages
 library(data.table)
 library(dplyr)
+library(survival)
 
 ###### 1.2 Load functions from R folder
 distr.sources <- list.files("R", 
@@ -52,6 +53,10 @@ set.seed(seed)
 # Initialize matrix of patient trajectories
 m_patients <- cancer_des(n_cohort, l_params)
 
+# Calculate time from cancer to death from any cause
+m_patients[, time_CDa := time_D - time_C]
+
+
 #### 4. Epidemiological calculations ========================================================
 
 # Prevalence
@@ -88,3 +93,11 @@ df_mst <- calc_duration(
   start_var = "time_P", 
   end_var = "time_C", 
   censor_var = "time_D")
+
+# Survival from diagnosis
+df_surv <- calc_surv(
+  m_patients = m_patients[time_C < time_D], # Subset of individuals diagnosed before death
+  event_time = "time_CDa",
+  event_flag = "Dc",
+  v_times = seq(0, 10)
+)

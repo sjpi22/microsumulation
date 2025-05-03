@@ -505,6 +505,82 @@ calc_risk <- function(
 }
 
 
+#' Calculate Kaplan-Meier Survival Curve
+#'
+#' Calculates a survival distribution.
+#'
+#' @param m_patients A data frame or matrix where each row represents an eligible patient, 
+#'   and columns include time to event onset, event flag, and group (if applicable).
+#' @param event_time The name (string) of the variable in \code{m_patients} 
+#'   indicating time to event.
+#' @param event_flag The name (string) of the variable indicating age at censoring 
+#'   (e.g., death or loss to follow-up). Patients who are censored before the event
+#'   age are excluded from the denominator.
+#' @param v_times A numeric vector of times at which to estimate survival. If 
+#'   \code{NULL}, the survival object is returned.
+#' @param strat_var The optional name (string) of the variable indicating 
+#'   categories to stratify by, otherwise 1 is used indicating no stratification.
+#'
+#' @return A survival object or data table with proportion without event over time.
+#'
+#' @examples
+#' # Example usage with simulated data:
+#' m_patients <- data.table(
+#'   pt_id = 1:5,
+#'   time_dx_to_death = c(12, 4, 30, 2, 8), # Time from disease diagnosis to death
+#'   death_dx = c(0, 1, 0, 0, 1), # Flag for whether they died of disease (1) or other causes (0)
+#'   stage = c(1, 3, 4, 3, 1) # Stage at diagnosis
+#' )
+#' 
+#' calc_surv(
+#'   m_patients = m_patients,
+#'   event_time = "time_dx_to_death",
+#'   event_flag = "death_dx"
+#' )
+#' 
+#' calc_surv(
+#'   m_patients = m_patients,
+#'   event_time = "time_dx_to_death",
+#'   event_flag = "death_dx",
+#'   v_times = seq(0, 10),
+#'   strat_var = "stage"
+#' )
+#' 
+#' @import data.table
+#' @import survival
+#' @export
+calc_surv <- function(m_patients,
+                      event_time,
+                      event_flag,
+                      v_times = NULL,
+                      strat_var = 1) {
+  # Get Kaplan-Meier fit
+  f <- as.formula(paste0("Surv(", event_time, ", ", event_flag, ") ~ ", strat_var))
+  surv_fit <- survfit(f, data = m_patients)
+  
+  # Output survival object or discretized data table
+  if (is.null(v_times)) { # Output survival fit object
+    return(surv_fit)
+  } else {
+    if (strat_var == 1) { # Not stratified by group
+      dt_surv <- with(summary(surv_fit, times = v_times),
+                      data.table(
+                        time = time,
+                        surv = surv
+                      ))
+    } else { # Stratified by group
+      dt_surv <- with(summary(surv_fit, times = v_times),
+                      data.table(
+                        strata = strata,
+                        time = time,
+                        surv = surv
+                      ))
+    }
+    return(dt_surv)
+  }
+}
+
+
 #' Calculate Categorical Distribution
 #'
 #' Calculates a categorical distribution (such as cancer stage or primary lesion 
